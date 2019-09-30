@@ -18,40 +18,29 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 02110-1301  USA
 """
 
-from ConfigParser import ConfigParser
+from past.builtins import cmp
+from future import standard_library
+standard_library.install_aliases()
+from builtins import str
+from builtins import object
+from configparser import ConfigParser
+
 import os
 import random
 import tempfile
-import urlgrabber
 
-from cobbler import action_acl
-from cobbler import action_buildiso
-from cobbler import action_check
-from cobbler import action_dlcontent
-from cobbler import action_hardlink
-from cobbler import action_log
-from cobbler import action_replicate
-from cobbler import action_report
-from cobbler import action_reposync
-from cobbler import action_status
-from cobbler import action_sync
+from cobbler.actions import status, dlcontent, hardlink, sync, buildiso, replicate, report, log, acl, check, reposync
 from cobbler import autoinstall_manager
 from cobbler import clogger
-from cobbler import collection_manager
-from cobbler import item_distro
-from cobbler import item_file
-from cobbler import item_image
-from cobbler import item_mgmtclass
-from cobbler import item_package
-from cobbler import item_profile
-from cobbler import item_repo
-from cobbler import item_system
+from cobbler.cobbler_collections import manager
+from cobbler.items import package, system, image, profile, repo, mgmtclass, distro, file
 from cobbler import module_loader
 from cobbler import power_manager
 from cobbler import tftpgen
 from cobbler import utils
 from cobbler import yumgen
 from cobbler import autoinstallgen
+from cobbler import download_manager
 from cobbler.cexceptions import CX
 from cobbler.utils import _
 
@@ -70,7 +59,7 @@ RSYNC_CMD = "rsync -a %s '%s' %s --progress"
 # on a request by request basis.
 
 
-class CobblerAPI:
+class CobblerAPI(object):
     """
     Python API module for Cobbler.
     See source for cobbler.py, or pydoc, for example usage.
@@ -100,7 +89,7 @@ class CobblerAPI:
             self.is_cobblerd = is_cobblerd
 
             try:
-                self.logger = clogger.Logger("/var/log/cobbler/cobbler.log")
+                self.logger = clogger.Logger()
             except CX:
                 # return to CLI/other but perms are not valid
                 # perms_ok is False
@@ -109,15 +98,14 @@ class CobblerAPI:
             # FIXME: conslidate into 1 server instance
 
             self.selinux_enabled = utils.is_selinux_enabled()
-            self.dist = utils.check_dist()
-            self.os_version = utils.os_release()
+            self.dist, self.os_version = utils.os_release()
 
             CobblerAPI.__has_loaded = True
 
             # load the modules first, or nothing else works...
             module_loader.load_modules()
 
-            self._collection_mgr = collection_manager.CollectionManager(self)
+            self._collection_mgr = manager.CollectionManager(self)
             self.deserialize()
 
             # import signatures
@@ -170,11 +158,12 @@ class CobblerAPI:
         Returns whether or not the OS is sufficient enough
         to run with SELinux enabled (currently EL 5 or later).
         """
-        self.dist
-        if self.dist == "redhat" and self.os_version < 5:
-            # doesn't support public_content_t
-            return False
-        return True
+        # FIXME: This detection is flawed. There is more than just Rhel with selinux and the original implemenation was
+        #        too broad.
+        if ("red hat" in self.dist or "redhat" in self.dist) and self.os_version >= 5:
+            return True
+        # doesn't support public_content_t
+        return False
 
     # ==========================================================
 
@@ -184,11 +173,11 @@ class CobblerAPI:
         API instance, regardless of the serializer type.
         """
         if not os.path.exists("/var/lib/cobbler/.mtime"):
-            fd = os.open("/var/lib/cobbler/.mtime", os.O_CREAT | os.O_RDWR, 0200)
-            os.write(fd, "0")
-            os.close(fd)
-            return 0
-        fd = open("/var/lib/cobbler/.mtime")
+            fd = open("/var/lib/cobbler/.mtime", 'w')
+            fd.write("0")
+            fd.close()
+            return float(0)
+        fd = open("/var/lib/cobbler/.mtime", 'r')
         data = fd.read().strip()
         return float(data)
 
@@ -343,8 +332,8 @@ class CobblerAPI:
     # ==========================================================================
 
     def remove_item(self, what, ref, recursive=False, delete=True, with_triggers=True, logger=None):
-        if isinstance(what, basestring):
-            if isinstance(ref, basestring):
+        if isinstance(what, str):
+            if isinstance(ref, str):
                 ref = self.get_item(what, ref)
                 if ref is None:
                     return      # nothing to remove
@@ -411,35 +400,35 @@ class CobblerAPI:
 
     def new_distro(self, is_subobject=False):
         self.log("new_distro", [is_subobject])
-        return item_distro.Distro(self._collection_mgr, is_subobject=is_subobject)
+        return distro.Distro(self._collection_mgr, is_subobject=is_subobject)
 
     def new_profile(self, is_subobject=False):
         self.log("new_profile", [is_subobject])
-        return item_profile.Profile(self._collection_mgr, is_subobject=is_subobject)
+        return profile.Profile(self._collection_mgr, is_subobject=is_subobject)
 
     def new_system(self, is_subobject=False):
         self.log("new_system", [is_subobject])
-        return item_system.System(self._collection_mgr, is_subobject=is_subobject)
+        return system.System(self._collection_mgr, is_subobject=is_subobject)
 
     def new_repo(self, is_subobject=False):
         self.log("new_repo", [is_subobject])
-        return item_repo.Repo(self._collection_mgr, is_subobject=is_subobject)
+        return repo.Repo(self._collection_mgr, is_subobject=is_subobject)
 
     def new_image(self, is_subobject=False):
         self.log("new_image", [is_subobject])
-        return item_image.Image(self._collection_mgr, is_subobject=is_subobject)
+        return image.Image(self._collection_mgr, is_subobject=is_subobject)
 
     def new_mgmtclass(self, is_subobject=False):
         self.log("new_mgmtclass", [is_subobject])
-        return item_mgmtclass.Mgmtclass(self._collection_mgr, is_subobject=is_subobject)
+        return mgmtclass.Mgmtclass(self._collection_mgr, is_subobject=is_subobject)
 
     def new_package(self, is_subobject=False):
         self.log("new_package", [is_subobject])
-        return item_package.Package(self._collection_mgr, is_subobject=is_subobject)
+        return package.Package(self._collection_mgr, is_subobject=is_subobject)
 
     def new_file(self, is_subobject=False):
         self.log("new_file", [is_subobject])
-        return item_file.File(self._collection_mgr, is_subobject=is_subobject)
+        return file.File(self._collection_mgr, is_subobject=is_subobject)
 
     # ==========================================================================
 
@@ -564,14 +553,13 @@ class CobblerAPI:
 
     def signature_update(self, logger):
         try:
+            url = self.settings().signature_url
+            dlmgr = download_manager.DownloadManager(self._collection_mgr, self.logger)
+            # write temp json file
             tmpfile = tempfile.NamedTemporaryFile()
-            proxies = {}
-            proxies['http'] = self.settings().proxy_url_ext
-            response = urlgrabber.grabber.urlopen(self.settings().signature_url, proxies=proxies)
-            sigjson = response.read()
-            tmpfile.write(sigjson)
+            sigjson = dlmgr.urlread(url)
+            tmpfile.write(sigjson.text.encode())
             tmpfile.flush()
-
             logger.debug("Successfully got file from %s" % self.settings().signature_url)
             # test the import without caching it
             try:
@@ -581,7 +569,7 @@ class CobblerAPI:
 
             # rewrite the real signature file and import it for real
             f = open(self.settings().signature_path, "w")
-            f.write(sigjson)
+            f.write(sigjson.text)
             f.close()
 
             utils.load_signatures(self.settings().signature_path)
@@ -614,18 +602,18 @@ class CobblerAPI:
 
         base = yum.YumBase()
         base.doRepoSetup()
-        repos = base.repos.listEnabled()
-        if len(repos) == 0:
+        repositorys = base.repos.listEnabled()
+        if len(repositorys) == 0:
             raise CX(_("no repos enabled/available -- giving up."))
 
-        for repo in repos:
-            url = repo.urls[0]
+        for repository in repositorys:
+            url = repository.urls[0]
             cobbler_repo = self.new_repo()
-            auto_name = repo.name.replace(" ", "")
+            auto_name = repository.name.replace(" ", "")
             # FIXME: probably doesn't work for yum-rhn-plugin ATM
             cobbler_repo.set_mirror(url)
             cobbler_repo.set_name(auto_name)
-            print "auto adding: %s (%s)" % (auto_name, url)
+            print("auto adding: %s (%s)" % (auto_name, url))
             self._collection_mgr.repos().add(cobbler_repo, save=True)
 
         # run cobbler reposync to apply changes
@@ -693,8 +681,8 @@ class CobblerAPI:
         their TFTP servers for PXE, etc.
         """
         self.log("check")
-        check = action_check.CobblerCheck(self._collection_mgr, logger=logger)
-        return check.run()
+        action_check = check.CobblerCheck(self._collection_mgr, logger=logger)
+        return action_check.run()
 
     # ==========================================================================
 
@@ -706,7 +694,7 @@ class CobblerAPI:
         """
         # FIXME: teach code that copies it to grab from the right place
         self.log("dlcontent")
-        grabber = action_dlcontent.ContentDownloader(self._collection_mgr, logger=logger)
+        grabber = dlcontent.ContentDownloader(self._collection_mgr, logger=logger)
         return grabber.run(force)
 
     # ==========================================================================
@@ -745,20 +733,20 @@ class CobblerAPI:
         self.dhcp = self.get_module_from_file(
             "dhcp",
             "module",
-            "manage_isc"
+            "managers.isc"
         ).get_manager(self._collection_mgr, logger)
         self.dns = self.get_module_from_file(
             "dns",
             "module",
-            "manage_bind"
+            "managers.bind"
         ).get_manager(self._collection_mgr, logger)
         self.tftpd = self.get_module_from_file(
             "tftpd",
             "module",
-            "in_tftpd",
+            "managers.in_tftpd",
         ).get_manager(self._collection_mgr, logger)
 
-        return action_sync.CobblerSync(self._collection_mgr, dhcp=self.dhcp, dns=self.dns, tftpd=self.tftpd, verbose=verbose, logger=logger)
+        return sync.CobblerSync(self._collection_mgr, dhcp=self.dhcp, dns=self.dns, tftpd=self.tftpd, verbose=verbose, logger=logger)
 
     # ==========================================================================
 
@@ -768,13 +756,13 @@ class CobblerAPI:
         or create the initial copy if no contents exist yet.
         """
         self.log("reposync", [name])
-        reposync = action_reposync.RepoSync(self._collection_mgr, tries=tries, nofail=nofail, logger=logger)
-        reposync.run(name)
+        action_reposync = reposync.RepoSync(self._collection_mgr, tries=tries, nofail=nofail, logger=logger)
+        action_reposync.run(name)
 
     # ==========================================================================
 
     def status(self, mode, logger=None):
-        statusifier = action_status.CobblerStatusReport(self._collection_mgr, mode, logger=logger)
+        statusifier = status.CobblerStatusReport(self._collection_mgr, mode, logger=logger)
         return statusifier.run()
 
     # ==========================================================================
@@ -880,8 +868,8 @@ class CobblerAPI:
         Configures users/groups to run the cobbler CLI as non-root.
         Pass in only one option at a time.  Powers "cobbler aclconfig"
         """
-        acl = action_acl.AclConfig(self._collection_mgr, logger)
-        acl.run(
+        action_acl = acl.AclConfig(self._collection_mgr, logger)
+        action_acl.run(
             adduser=adduser,
             addgroup=addgroup,
             removeuser=removeuser,
@@ -892,14 +880,14 @@ class CobblerAPI:
 
     def serialize(self):
         """
-        Save the collections to disk.
+        Save the cobbler_collections to disk.
         Cobbler internal use only.
         """
         self._collection_mgr.serialize()
 
     def deserialize(self):
         """
-        Load collections from disk.
+        Load cobbler_collections from disk.
         Cobbler internal use only.
         """
         return self._collection_mgr.deserialize()
@@ -962,7 +950,7 @@ class CobblerAPI:
                   profiles=None, systems=None, buildisodir=None, distro=None,
                   standalone=None, airgapped=None, source=None,
                   exclude_dns=None, mkisofs_opts=None, logger=None):
-        builder = action_buildiso.BuildIso(self._collection_mgr, logger=logger)
+        builder = buildiso.BuildIso(self._collection_mgr, logger=logger)
         builder.run(
             iso=iso,
             profiles=profiles, systems=systems,
@@ -974,7 +962,7 @@ class CobblerAPI:
     # ==========================================================================
 
     def hardlink(self, logger=None):
-        linker = action_hardlink.HardLinker(self._collection_mgr, logger=logger)
+        linker = hardlink.HardLinker(self._collection_mgr, logger=logger)
         return linker.run()
 
     # ==========================================================================
@@ -984,7 +972,7 @@ class CobblerAPI:
         """
         Pull down data/configs from a remote cobbler server that is a master to this server.
         """
-        replicator = action_replicate.Replicate(self._collection_mgr, logger=logger)
+        replicator = replicate.Replicate(self._collection_mgr, logger=logger)
         return replicator.run(
             cobbler_master=cobbler_master,
             port=port,
@@ -1008,7 +996,7 @@ class CobblerAPI:
         """
         Report functionality for cobbler
         """
-        reporter = action_report.Report(self._collection_mgr)
+        reporter = report.Report(self._collection_mgr)
         return reporter.run(report_what=report_what, report_name=report_name,
                             report_type=report_type, report_fields=report_fields,
                             report_noheaders=report_noheaders)
@@ -1033,11 +1021,12 @@ class CobblerAPI:
         elif power_operation == "off":
             self.power_mgr.power_off(system, user=user, password=password, logger=logger)
         elif power_operation == "status":
-            self.power_mgr.get_power_status(system, user=user, password=password, logger=logger)
+            return self.power_mgr.get_power_status(system, user=user, password=password, logger=logger)
         elif power_operation == "reboot":
             self.power_mgr.reboot(system, user=user, password=password, logger=logger)
         else:
             utils.die(self.logger, "invalid power operation '%s', expected on/off/status/reboot" % power_operation)
+        return None
 
     # ==========================================================================
 
@@ -1045,9 +1034,4 @@ class CobblerAPI:
         """
         Clears console and anamon logs for system
         """
-        action_log.LogTool(self._collection_mgr, system, self, logger=logger).clear()
-
-    def get_os_details(self):
-        return (self.dist, self.os_version)
-
-# EOF
+        log.LogTool(self._collection_mgr, system, self, logger=logger).clear()

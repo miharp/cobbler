@@ -18,29 +18,28 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 02110-1301  USA
 """
 
+from past.builtins import cmp
+from future import standard_library
+standard_library.install_aliases()
+from builtins import str
+from builtins import range
+from builtins import object
+from past.utils import old_div
 import base64
 import errno
 import fcntl
 import os
 import random
-import SimpleXMLRPCServer
-from SocketServer import ThreadingMixIn
+import xmlrpc.server
+from socketserver import ThreadingMixIn
 import stat
-import string
 from threading import Thread
 import time
 
 from cobbler import autoinstall_manager
 from cobbler import clogger
 from cobbler import configgen
-from cobbler import item_distro
-from cobbler import item_file
-from cobbler import item_image
-from cobbler import item_mgmtclass
-from cobbler import item_package
-from cobbler import item_profile
-from cobbler import item_repo
-from cobbler import item_system
+from cobbler.items import package, system, image, profile, repo, mgmtclass, distro, file
 from cobbler import tftpgen
 from cobbler import utils
 from cobbler.cexceptions import CX
@@ -98,7 +97,7 @@ class CobblerThread(Thread):
 # *********************************************************************
 
 
-class CobblerXMLRPCInterface:
+class CobblerXMLRPCInterface(object):
     """
     This is the interface used for all XMLRPC methods, for instance,
     as used by koan or CobblerWeb.
@@ -118,7 +117,6 @@ class CobblerXMLRPCInterface:
         self.events = {}
         self.shared_secret = utils.get_shared_secret()
         random.seed(time.time())
-        self.translator = utils.Translator(keep=string.printable)
         self.tftpgen = tftpgen.TFTPGen(api._collection_mgr, self.logger)
         self.autoinstall_mgr = autoinstall_manager.AutoInstallationManager(api._collection_mgr)
 
@@ -266,6 +264,20 @@ class CobblerXMLRPCInterface:
         self.check_access(token, "power_system")
         return self.__start_task(runner, token, "power", "Power management (%s)" % options.get("power", ""), options)
 
+    def power_system(self, system_id, power, token):
+        """
+        Execute power task synchronously.
+             system_id      -- system handle
+             power          -- power operation (on/off/status/reboot)
+             token          -- token from login() call, all tasks require tokens
+        Returns true if the operation succeeded or if the system is powered on (in case of status).
+        False otherwise.
+        """
+        system = self.__get_object(system_id)
+        self.check_access(token, "power_system", system)
+        result = self.api.power_system(system, power, logger=self.logger)
+        return True if result is None else result
+
     def background_signature_update(self, options, token):
         def runner(self):
             self.remote.api.signature_update(self.logger)
@@ -280,7 +292,7 @@ class CobblerXMLRPCInterface:
         """
         # return only the events the user has not seen
         self.events_filtered = {}
-        for (k, x) in self.events.iteritems():
+        for (k, x) in list(self.events.items()):
             if for_user in x[3]:
                 pass
             else:
@@ -288,7 +300,7 @@ class CobblerXMLRPCInterface:
 
         # mark as read so user will not get events again
         if for_user is not None and for_user != "":
-            for (k, x) in self.events.iteritems():
+            for (k, x) in list(self.events.items()):
                 if for_user in x[3]:
                     pass
                 else:
@@ -307,7 +319,6 @@ class CobblerXMLRPCInterface:
         if os.path.exists(path):
             fh = open(path, "r")
             data = str(fh.read())
-            data = self.translator(data)
             fh.close()
             return data
         else:
@@ -342,11 +353,9 @@ class CobblerXMLRPCInterface:
         logatron = clogger.Logger("/var/log/cobbler/tasks/%s.log" % event_id)
 
         thr_obj = CobblerThread(event_id, self, logatron, args, role_name, self.api)
-        on_done_type = type(thr_obj.on_done)
-
         thr_obj._run = thr_obj_fn
         if on_done is not None:
-            thr_obj.on_done = on_done_type(on_done, thr_obj, CobblerThread)
+            thr_obj.on_done = on_done.__get__(thr_obj, CobblerThread)
         thr_obj.start()
         return event_id
 
@@ -470,7 +479,7 @@ class CobblerXMLRPCInterface:
             items_per_page = default_items_per_page
 
         num_items = len(data)
-        num_pages = ((num_items - 1) / items_per_page) + 1
+        num_pages = (old_div((num_items - 1), items_per_page)) + 1
         if num_pages == 0:
             num_pages = 1
         if page > num_pages:
@@ -496,7 +505,7 @@ class CobblerXMLRPCInterface:
             'page': page,
             'prev_page': prev_page,
             'next_page': next_page,
-            'pages': range(1, num_pages + 1),
+            'pages': list(range(1, num_pages + 1)),
             'num_pages': num_pages,
             'num_items': num_items,
             'start_item': start_item,
@@ -559,9 +568,19 @@ class CobblerXMLRPCInterface:
         what is the name of a cobbler object type, as described for get_item.
         Individual list elements are the same for get_item.
         """
-        # FIXME: is the xmlrpc_hacks method still required ?
-        item = [x.to_dict() for x in self.api.get_items(what)]
-        return self.xmlrpc_hacks(item)
+        items = [x.to_dict() for x in self.api.get_items(what)]
+
+        for item in items:
+            if "autoinstall" in item:
+                self._log("autoinstall legacy field added as kickstart")
+                kick_dict = {"kickstart": item.get("autoinstall")}
+                item.update(kick_dict)
+            if "autoinstall_meta" in item:
+                self._log("autoinstall_meta legacy field added as ks_meta")
+                kick_meta_dict = {"ks_meta": item.get("autoinstall_meta")}
+                item.update(kick_meta_dict)
+
+        return self.xmlrpc_hacks(items)
 
     def get_item_names(self, what):
         """
@@ -705,31 +724,31 @@ class CobblerXMLRPCInterface:
         self._log("remove_item (%s, recursive=%s)" % (what, recursive), name=name, token=token)
         obj = self.api.get_item(what, name)
         self.check_access(token, "remove_%s" % what, obj)
-        self.api.remove_item(what, name, delete=True, with_triggers=True, recursive=recursive)
+        self.api.remove_item(what, name, delete=True, with_triggers=True, recursive=recursive, logger=self.logger)
         return True
 
-    def remove_distro(self, name, token, recursive=1):
+    def remove_distro(self, name, token, recursive=True):
         return self.remove_item("distro", name, token, recursive)
 
-    def remove_profile(self, name, token, recursive=1):
+    def remove_profile(self, name, token, recursive=True):
         return self.remove_item("profile", name, token, recursive)
 
-    def remove_system(self, name, token, recursive=1):
+    def remove_system(self, name, token, recursive=True):
         return self.remove_item("system", name, token, recursive)
 
-    def remove_repo(self, name, token, recursive=1):
+    def remove_repo(self, name, token, recursive=True):
         return self.remove_item("repo", name, token, recursive)
 
-    def remove_image(self, name, token, recursive=1):
+    def remove_image(self, name, token, recursive=True):
         return self.remove_item("image", name, token, recursive)
 
-    def remove_mgmtclass(self, name, token, recursive=1):
+    def remove_mgmtclass(self, name, token, recursive=True):
         return self.remove_item("mgmtclass", name, token, recursive)
 
-    def remove_package(self, name, token, recursive=1):
+    def remove_package(self, name, token, recursive=True):
         return self.remove_item("package", name, token, recursive)
 
-    def remove_file(self, name, token, recursive=1):
+    def remove_file(self, name, token, recursive=True):
         return self.remove_item("file", name, token, recursive)
 
     def copy_item(self, what, object_id, newname, token=None):
@@ -739,7 +758,7 @@ class CobblerXMLRPCInterface:
         self._log("copy_item(%s)" % what, object_id=object_id, token=token)
         self.check_access(token, "copy_%s" % what)
         obj = self.__get_object(object_id)
-        self.api.copy_item(what, obj, newname)
+        self.api.copy_item(what, obj, newname, logger=self.logger)
         return True
 
     def copy_distro(self, object_id, newname, token=None):
@@ -772,7 +791,7 @@ class CobblerXMLRPCInterface:
         """
         self._log("rename_item(%s)" % what, object_id=object_id, token=token)
         obj = self.__get_object(object_id)
-        self.api.rename_item(what, obj, newname)
+        self.api.rename_item(what, obj, newname, logger=self.logger)
         return True
 
     def rename_distro(self, object_id, newname, token=None):
@@ -810,21 +829,21 @@ class CobblerXMLRPCInterface:
         self._log("new_item(%s)" % what, token=token)
         self.check_access(token, "new_%s" % what)
         if what == "distro":
-            d = item_distro.Distro(self.api._collection_mgr, is_subobject=is_subobject)
+            d = distro.Distro(self.api._collection_mgr, is_subobject=is_subobject)
         elif what == "profile":
-            d = item_profile.Profile(self.api._collection_mgr, is_subobject=is_subobject)
+            d = profile.Profile(self.api._collection_mgr, is_subobject=is_subobject)
         elif what == "system":
-            d = item_system.System(self.api._collection_mgr, is_subobject=is_subobject)
+            d = system.System(self.api._collection_mgr, is_subobject=is_subobject)
         elif what == "repo":
-            d = item_repo.Repo(self.api._collection_mgr, is_subobject=is_subobject)
+            d = repo.Repo(self.api._collection_mgr, is_subobject=is_subobject)
         elif what == "image":
-            d = item_image.Image(self.api._collection_mgr, is_subobject=is_subobject)
+            d = image.Image(self.api._collection_mgr, is_subobject=is_subobject)
         elif what == "mgmtclass":
-            d = item_mgmtclass.Mgmtclass(self.api._collection_mgr, is_subobject=is_subobject)
+            d = mgmtclass.Mgmtclass(self.api._collection_mgr, is_subobject=is_subobject)
         elif what == "package":
-            d = item_package.Package(self.api._collection_mgr, is_subobject=is_subobject)
+            d = package.Package(self.api._collection_mgr, is_subobject=is_subobject)
         elif what == "file":
-            d = item_file.File(self.api._collection_mgr, is_subobject=is_subobject)
+            d = file.File(self.api._collection_mgr, is_subobject=is_subobject)
         else:
             raise CX("internal error, collection name is %s" % what)
         key = "___NEW___%s::%s" % (what, self.__get_random(25))
@@ -914,7 +933,7 @@ class CobblerXMLRPCInterface:
         if f in ("delete_interface", "rename_interface"):
             return True
 
-        for x in item_system.NETWORK_INTERFACE_FIELDS:
+        for x in system.NETWORK_INTERFACE_FIELDS:
             if f == x[0]:
                 return True
         return False
@@ -981,7 +1000,7 @@ class CobblerXMLRPCInterface:
             # modify when done, rather than now.
             imods = {}
             # FIXME: needs to know about how to delete interfaces too!
-            for (k, v) in attributes.iteritems():
+            for (k, v) in list(attributes.items()):
                 if object_type != "system" or not self.__is_interface_field(k):
                     # in place modifications allow for adding a key/value pair while keeping other k/v
                     # pairs intact.
@@ -990,7 +1009,7 @@ class CobblerXMLRPCInterface:
                         details = self.get_item(object_type, object_name)
                         v2 = details[k]
                         (ok, input) = utils.input_string_or_dict(v)
-                        for (a, b) in input.iteritems():
+                        for (a, b) in list(input.items()):
                             if a.startswith("~") and len(a) > 1:
                                 del v2[a[1:]]
                             else:
@@ -1035,9 +1054,9 @@ class CobblerXMLRPCInterface:
         obj = self.__get_object(object_id)
         self.check_access(token, "save_%s" % what, obj)
         if editmode == "new":
-            self.api.add_item(what, obj, check_for_duplicate_names=True)
+            self.api.add_item(what, obj, check_for_duplicate_names=True, logger=self.logger)
         else:
-            self.api.add_item(what, obj)
+            self.api.add_item(what, obj, logger=self.logger)
         return True
 
     def save_distro(self, object_id, token, editmode="bypass"):
@@ -1237,7 +1256,7 @@ class CobblerXMLRPCInterface:
         profile = info.get("profile", "")
         hostname = info.get("hostname", "")
         interfaces = info.get("interfaces", {})
-        ilen = len(interfaces.keys())
+        ilen = len(list(interfaces.keys()))
 
         if name == "":
             raise CX("no system name submitted")
@@ -1250,7 +1269,7 @@ class CobblerXMLRPCInterface:
 
         # validate things first
         name = info.get("name", "")
-        inames = interfaces.keys()
+        inames = list(interfaces.keys())
         if self.api.find_system(name=name):
             raise CX("system name conflicts")
         if hostname != "" and self.api.find_system(hostname=hostname):
@@ -1296,7 +1315,7 @@ class CobblerXMLRPCInterface:
                 obj.set_ip_address(ip, iname)
             if netmask != "" and netmask != "?":
                 obj.set_netmask(netmask, iname)
-        self.api.add_system(obj)
+        self.api.add_system(obj, logger=self.logger)
         return 0
 
     def disable_netboot(self, name, token=None, **rest):
@@ -1324,7 +1343,7 @@ class CobblerXMLRPCInterface:
         # disabling triggers and sync to make this extremely fast.
         systems.add(obj, save=True, with_triggers=triggers_enabled, with_sync=False, quick_pxe_update=True)
         # re-generate dhcp configuration
-        self.api.sync_dhcp()
+        self.api.sync_dhcp(logger=self.logger)
         return True
 
     def upload_log_data(self, sys_name, file, size, offset, data, token=None, **rest):
@@ -1371,20 +1390,20 @@ class CobblerXMLRPCInterface:
 
         # XXX - have an incoming dir and move after upload complete
         # SECURITY - ensure path remains under uploadpath
-        tt = string.maketrans("/", "+")
-        fn = string.translate(file, tt)
+        tt = str.maketrans("/", "+")
+        fn = str.translate(file, tt)
         if fn.startswith('..'):
             raise CX("invalid filename used: %s" % fn)
 
         # FIXME ... get the base dir from cobbler settings()
         udir = "/var/log/cobbler/anamon/%s" % sys_name
         if not os.path.isdir(udir):
-            os.mkdir(udir, 0755)
+            os.mkdir(udir, 0o755)
 
         fn = "%s/%s" % (udir, fn)
         try:
             st = os.lstat(fn)
-        except OSError, e:
+        except OSError as e:
             if e.errno == errno.ENOENT:
                 pass
             else:
@@ -1393,7 +1412,7 @@ class CobblerXMLRPCInterface:
             if not stat.S_ISREG(st.st_mode):
                 raise CX("destination not a file: %s" % fn)
 
-        fd = os.open(fn, os.O_RDWR | os.O_CREAT, 0644)
+        fd = os.open(fn, os.O_RDWR | os.O_CREAT, 0o644)
         # log_error("fd=%r" %fd)
         try:
             if offset == 0 or (offset == -1 and size == len(contents)):
@@ -1560,7 +1579,7 @@ class CobblerXMLRPCInterface:
         if system is None:
             return {}
         else:
-            return self.get_system_for_koan(system.name)
+            return self.get_system_as_rendered(system.name)
 
     def get_distro_as_rendered(self, name, token=None, **rest):
         """
@@ -1705,6 +1724,161 @@ class CobblerXMLRPCInterface:
             return self.xmlrpc_hacks(utils.blender(self.api, True, obj))
         return self.xmlrpc_hacks({})
 
+    def get_distro_for_koan(self, name, token=None, **rest):
+        """
+        This is a legacy function for 2.6.6 releases.
+        :param name: The name of the distro to get.
+        :param token: Auth token to authenticate against the api.
+        :param rest: This is dropped in this method since it is not needed here.
+        :return: The desired distro or '~'.
+        """
+        self._log("get_distro_for_koan", name=name, token=token)
+        obj = self.api.find_distro(name=name)
+        if obj is not None:
+            _dict = utils.blender(self.api, True, obj)
+            _dict["ks_meta"] = _dict["autoinstall_meta"]
+            return self.xmlrpc_hacks(_dict)
+        return self.xmlrpc_hacks({})
+
+    def get_profile_for_koan(self, name, token=None, **rest):
+        """
+        This is a legacy function for 2.6.6 releases.
+        :param name: The name of the profile to get.
+        :param token: Auth token to authenticate against the api.
+        :param rest: This is dropped in this method since it is not needed here.
+        :return: The desired profile or '~'.
+        """
+        self._log("get_profile_for_koan", name=name, token=token)
+        obj = self.api.find_profile(name=name)
+        if obj is not None:
+            _dict = utils.blender(self.api, True, obj)
+            _dict["kickstart"] = _dict["autoinstall"]
+            _dict["ks_meta"] = _dict["autoinstall_meta"]
+            return self.xmlrpc_hacks(_dict)
+        return self.xmlrpc_hacks({})
+
+    def get_system_for_koan(self, name, token=None, **rest):
+        """
+        This is a legacy function for 2.6.6 releases.
+        :param name: The name of the system to get.
+        :param token: Auth token to authenticate against the api.
+        :param rest: This is dropped in this method since it is not needed here.
+        :return: The desired system or '~'.
+        """
+        self._log("get_system_as_rendered", name=name, token=token)
+        obj = self.api.find_system(name=name)
+        if obj is not None:
+            _dict = utils.blender(self.api, True, obj)
+
+            # Generate a pxelinux.cfg?
+            image_based = False
+            profile = obj.get_conceptual_parent()
+            distro = profile.get_conceptual_parent()
+
+            # the management classes stored in the system are just a list
+            # of names, so we need to turn it into a full list of dictionaries
+            # (right now we just use the params field)
+            mcs = _dict["mgmt_classes"]
+            _dict["mgmt_classes"] = {}
+            for m in mcs:
+                c = self.api.find_mgmtclass(name=m)
+                if c:
+                    _dict["mgmt_classes"][m] = c.to_dict()
+
+            arch = None
+            if distro is None and profile.COLLECTION_TYPE == "image":
+                image_based = True
+                arch = profile.arch
+            else:
+                arch = distro.arch
+
+            if obj.is_management_supported():
+                if not image_based:
+                    _dict["pxelinux.cfg"] = self.tftpgen.write_pxe_file(
+                        None, obj, profile, distro, arch)
+                else:
+                    _dict["pxelinux.cfg"] = self.tftpgen.write_pxe_file(
+                        None, obj, None, None, arch, image=profile)
+
+            # Add legacy fields to the system
+            _dict["kickstart"] = _dict["autoinstall"]
+            _dict["ks_meta"] = _dict["autoinstall_meta"]
+
+            return self.xmlrpc_hacks(_dict)
+        return self.xmlrpc_hacks({})
+
+    def get_repo_for_koan(self, name, token=None, **rest):
+        """
+        This is a legacy function for 2.6.6 releases.
+        :param name: The name of the repo to get.
+        :param token: Auth token to authenticate against the api.
+        :param rest: This is dropped in this method since it is not needed here.
+        :return: The desired repo or '~'.
+        """
+        self._log("get_repo_for_koan", name=name, token=token)
+        obj = self.api.find_repo(name=name)
+        if obj is not None:
+            return self.xmlrpc_hacks(utils.blender(self.api, True, obj))
+        return self.xmlrpc_hacks({})
+
+    def get_image_for_koan(self, name, token=None, **rest):
+        """
+        This is a legacy function for 2.6.6 releases.
+        :param name: The name of the image to get.
+        :param token: Auth token to authenticate against the api.
+        :param rest: This is dropped in this method since it is not needed here.
+        :return: The desired image or '~'
+        """
+        self._log("get_image_for_koan", name=name, token=token)
+        obj = self.api.find_image(name=name)
+        if obj is not None:
+            _dict = utils.blender(self.api, True, obj)
+            _dict["kickstart"] = _dict["autoinstall"]
+            return self.xmlrpc_hacks(_dict)
+        return self.xmlrpc_hacks({})
+
+    def get_mgmtclass_for_koan(self, name, token=None, **rest):
+        """
+        This is a legacy function for 2.6.6 releases.
+        :param name: Name of the mgmtclass to get.
+        :param token: Auth token to authenticate against the api.
+        :param rest: This is dropped in this method since it is not needed here.
+        :return: The desired mgmtclass or `~`.
+        """
+        self._log("get_mgmtclass_for_koan", name=name, token=token)
+        obj = self.api.find_mgmtclass(name=name)
+        if obj is not None:
+            return self.xmlrpc_hacks(utils.blender(self.api, True, obj))
+        return self.xmlrpc_hacks({})
+
+    def get_package_for_koan(self, name, token=None, **rest):
+        """
+        This is a legacy function for 2.6.6 releases.
+        :param name: Name of the package to get.
+        :param token: Auth token to authenticate against the api.
+        :param rest: This is dropped in this method since it is not needed here.
+        :return: The desired package or '~'.
+        """
+        self._log("get_package_for_koan", name=name, token=token)
+        obj = self.api.find_package(name=name)
+        if obj is not None:
+            return self.xmlrpc_hacks(utils.blender(self.api, True, obj))
+        return self.xmlrpc_hacks({})
+
+    def get_file_for_koan(self, name, token=None, **rest):
+        """
+        This is a legacy function for 2.6.6 releases.
+        :param name: Name of the file to get.
+        :param token: Auth token to authenticate against the api.
+        :param rest: This is dropped in this method since it is not needed here.
+        :return: The desired file or '~'.
+        """
+        self._log("get_file_for_koan", name=name, token=token)
+        obj = self.api.find_file(name=name)
+        if obj is not None:
+            return self.xmlrpc_hacks(utils.blender(self.api, True, obj))
+        return self.xmlrpc_hacks({})
+
     def get_random_mac(self, virt_type="xenpv", token=None, **rest):
         """
         Wrapper for utils.get_random_mac
@@ -1728,14 +1902,13 @@ class CobblerXMLRPCInterface:
         While a read-only operation, this requires a token because it's potentially a fair amount of I/O
         """
         self.check_access(token, "sync")
-        return self.api.status(mode=mode)
+        return self.api.status(mode=mode, logger=self.logger)
 
     def __get_random(self, length):
-        urandom = open("/dev/urandom")
-        b64 = base64.encodestring(urandom.read(length))
+        urandom = open("/dev/urandom", 'rb')
+        b64 = base64.b64encode(urandom.read(length))
         urandom.close()
-        b64 = b64.replace("\n", "")
-        return b64
+        return b64.decode()
 
     def __make_token(self, user):
         """
@@ -1751,17 +1924,17 @@ class CobblerXMLRPCInterface:
         Also removes expired events
         """
         timenow = time.time()
-        for token in self.token_cache.keys():
+        for token in list(self.token_cache.keys()):
             (tokentime, user) = self.token_cache[token]
             if (timenow > tokentime + self.api.settings().auth_token_expiration):
                 self._log("expiring token", token=token, debug=True)
                 del self.token_cache[token]
         # and also expired objects
-        for oid in self.object_cache.keys():
+        for oid in list(self.object_cache.keys()):
             (tokentime, entry) = self.object_cache[oid]
             if (timenow > tokentime + CACHE_TIMEOUT):
                 del self.object_cache[oid]
-        for tid in self.events.keys():
+        for tid in list(self.events.keys()):
             (eventtime, name, status, who) = self.events[tid]
             if (timenow > eventtime + EVENT_TIMEOUT):
                 del self.events[tid]
@@ -1907,7 +2080,7 @@ class CobblerXMLRPCInterface:
         """
         self._log("sync_dhcp", token=token)
         self.check_access(token, "sync")
-        self.api.sync_dhcp()
+        self.api.sync_dhcp(logger=self.logger)
         return True
 
     def sync(self, token):
@@ -1919,7 +2092,7 @@ class CobblerXMLRPCInterface:
         # FIXME: performance
         self._log("sync", token=token)
         self.check_access(token, "sync")
-        self.api.sync()
+        self.api.sync(logger=self.logger)
         return True
 
     def read_autoinstall_template(self, file_path, token):
@@ -2039,15 +2212,15 @@ class CobblerXMLRPCInterface:
 # *********************************************************************************
 
 
-class CobblerXMLRPCServer(ThreadingMixIn, SimpleXMLRPCServer.SimpleXMLRPCServer):
+class CobblerXMLRPCServer(ThreadingMixIn, xmlrpc.server.SimpleXMLRPCServer):
     def __init__(self, args):
         self.allow_reuse_address = True
-        SimpleXMLRPCServer.SimpleXMLRPCServer.__init__(self, args)
+        xmlrpc.server.SimpleXMLRPCServer.__init__(self, args)
 
 # *********************************************************************************
 
 
-class ProxiedXMLRPCInterface:
+class ProxiedXMLRPCInterface(object):
 
     def __init__(self, api, proxy_class):
         self.proxied = proxy_class(api)
@@ -2059,14 +2232,14 @@ class ProxiedXMLRPCInterface:
             raise CX("forbidden method")
 
         if not hasattr(self.proxied, method):
-            raise CX("unknown remote method")
+            raise CX("unknown remote method '%s'" % method)
 
         method_handle = getattr(self.proxied, method)
 
         # FIXME: see if this works without extra boilerplate
         try:
             return method_handle(*params)
-        except Exception, e:
+        except Exception as e:
             utils.log_exc(self.logger)
             raise e
 

@@ -34,7 +34,7 @@ LOCK_HANDLE = None
 
 
 def handler(num, frame):
-    print >> sys.stderr, "Ctrl-C not allowed during writes.  Please wait."
+    print("Ctrl-C not allowed during writes.  Please wait.", file=sys.stderr)
     return True
 
 
@@ -59,12 +59,12 @@ def __grab_lock():
 
 def __release_lock(with_changes=False):
     if with_changes:
-        # this file is used to know the time of last modification on collections
+        # this file is used to know the time of last modification on cobbler_collections
         # was made -- allowing the API to work more smoothly without
         # a lot of unneccessary reloads.
-        fd = os.open("/var/lib/cobbler/.mtime", os.O_CREAT | os.O_RDWR, 0200)
-        os.write(fd, "%f" % time.time())
-        os.close(fd)
+        fd = open("/var/lib/cobbler/.mtime", 'w')
+        fd.write("%f" % time.time())
+        fd.close()
     if LOCK_ENABLED:
         LOCK_HANDLE = open("/var/lib/cobbler/lock", "r")
         fcntl.flock(LOCK_HANDLE.fileno(), fcntl.LOCK_UN)
@@ -129,6 +129,6 @@ def __get_storage_module(collection_type):
     """
     Look up serializer in /etc/cobbler/modules.conf
     """
-    return module_loader.get_module_from_file("serializers", collection_type, "serializer_file")
+    return module_loader.get_module_from_file("serializers", collection_type, "serializers.file")
 
 # EOF

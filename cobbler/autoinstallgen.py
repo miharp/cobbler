@@ -21,7 +21,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 02110-1301  USA
 """
 
-import urlparse
+from future import standard_library
+standard_library.install_aliases()
+from builtins import object
+import urllib.parse
 import xml.dom.minidom
 
 from cobbler import templar
@@ -31,7 +34,7 @@ from cobbler.cexceptions import FileNotFoundException, CX
 from cobbler.utils import _
 
 
-class AutoInstallationGen:
+class AutoInstallationGen(object):
     """
     Handles conversion of internal state to the tftpboot tree layout
     """
@@ -81,7 +84,6 @@ class AutoInstallationGen:
 
     def generate_autoyast(self, profile=None, system=None, raw_data=None):
         self.api.logger.info("autoyast XML file found. Checkpoint: profile=%s system=%s" % (profile, system))
-        nopxe = "\ncurl \"http://%s/cblr/svc/op/nopxe/system/%s\" > /dev/null"
         runpost = "\ncurl \"http://%s/cblr/svc/op/trig/mode/post/%s/%s\" > /dev/null"
         runpre = "\ncurl \"http://%s/cblr/svc/op/trig/mode/pre/%s/%s\" > /dev/null"
 
@@ -136,8 +138,6 @@ class AutoInstallationGen:
         if system is not None:
             name = system.name
 
-        if str(self.settings.pxe_just_once).upper() in ["1", "Y", "YES", "TRUE"]:
-            self.addAutoYaSTScript(document, "chroot-scripts", nopxe % (srv, name))
         if self.settings.run_install_triggers:
             # notify cobblerd when we start/finished the installation
             self.addAutoYaSTScript(document, "pre-scripts", runpre % (srv, what, name))
@@ -283,7 +283,7 @@ class AutoInstallationGen:
         # add install_source_directory metavariable to autoinstall metavariables
         # if distro is based on Debian
         if distro.breed in ["debian", "ubuntu"] and "tree" in meta:
-            urlparts = urlparse.urlsplit(meta["tree"])
+            urlparts = urllib.parse.urlsplit(meta["tree"])
             meta["install_source_directory"] = urlparts[2]
 
         try:

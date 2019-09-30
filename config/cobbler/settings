@@ -244,6 +244,11 @@ bind_master: 127.0.0.1
 # the choice of TFTP mangement engine is in /etc/cobbler/modules.conf
 manage_tftpd: 1
 
+# This variable contains the location of the tftpboot directory. If this directory is not present cobbler does not
+# start.
+# Default: /srv/tftpboot
+tftpboot_location: "/srv/tftpboot"
+
 # set to 1 to enable Cobbler's RSYNC management features.
 manage_rsync: 0
 
@@ -298,6 +303,12 @@ redhat_management_server: "xmlrpc.rhn.redhat.com"
 # a single org in your satellite, it's probably safe to turn this
 # on and then you can use CobblerWeb alongside a Satellite install.
 redhat_management_permissive: 0
+
+# specify the default Red Hat authorization key to use to register
+# system.  If left blank, no registration will be attempted.  Similarly
+# you can set the --redhat-management-key to blank on any system to
+# keep it from trying to register.
+redhat_management_key: ""
 
 # if set to 1, allows /usr/bin/cobbler-register (part of the koan package)
 # to be used to remotely add new cobbler system records to cobbler.
@@ -427,12 +438,17 @@ replicate_repo_rsync_options: "-avzH"
 always_write_dhcp_entries: 0
 
 # external proxy - used by: get-loaders, reposync, signature update
-# eg: proxy_url_ext: "http://192.168.1.1:8080"
-proxy_url_ext: ""
+proxy_url_ext:
+  #http: http://192.168.1.1:8080
+  #https: https://192.168.1.1:8443
 
 # internal proxy - used by systems to reach cobbler for kickstarts
 # eg: proxy_url_int: "http://10.0.0.1:8080"
 proxy_url_int: ""
+
+# this is a directory of files that cobbler uses to include
+# files into Jinja2 templates
+#jinja2_includedir: /var/lib/cobbler/jinja2
 
 # include other configuration snippets
 include: [ "/etc/cobbler/settings.d/*.settings" ]

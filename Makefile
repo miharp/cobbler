@@ -1,3 +1,24 @@
+#
+# Setup Makefile to match your environment
+#
+PYTHON=/usr/bin/python3
+
+# check for executables
+
+CMD := $(shell command -v pyflakes-3 2> /dev/null)
+ifndef CMD
+	PYFLAKES=/usr/bin/pyflakes
+else
+	PYFLAKES=/usr/bin/pyflakes-3
+endif
+
+CMD := $(shell command -v pycodestyle-3 2> /dev/null)
+ifndef CMD
+	PYCODESTYLE=/usr/bin/pycodestyle
+else
+	PYCODESTYLE=/usr/bin/pycodestyle-3
+endif
+
 
 TOP_DIR:=$(shell pwd)
 DESTDIR=/
@@ -16,7 +37,8 @@ clean:
 	@rm -f cobbler/web/*.pyc
 	@rm -f cobbler/web/templatetags/*.pyc
 	@echo "cleaning: build artifacts"
-	@rm -rf build rpm-build release dist
+	@rm -rf build release dist cobbler.egg-info
+	@rm -rf rpm-build/*
 	@rm -f MANIFEST AUTHORS README
 	@rm -f config/version
 	@rm -f docs/*.1.gz
@@ -38,14 +60,14 @@ doc:
 
 qa:
 	@echo "checking: pyflakes"
-	@pyflakes \
+	@${PYFLAKES} \
 		*.py \
 		cobbler/*.py \
 		cobbler/modules/*.py \
 		cobbler/web/*.py cobbler/web/templatetags/*.py \
 		bin/cobbler* bin/*.py web/cobbler.wsgi
-	@echo "checking: pep8"
-	@pep8 -r --ignore E501,E402 \
+	@echo "checking: pycodestyle"
+	@${PYCODESTYLE} -r --ignore E501,E402,E722,W504 \
         *.py \
         cobbler/*.py \
         cobbler/modules/*.py \
@@ -59,7 +81,7 @@ authors:
 
 sdist: readme authors
 	@echo "creating: sdist"
-	@python setup.py sdist > /dev/null
+	@${PYTHON} setup.py sdist > /dev/null
 
 release: clean qa readme authors sdist doc
 	@echo "creating: release artifacts"
@@ -85,11 +107,11 @@ nosetests:
 	PYTHONPATH=./cobbler/ nosetests -v -w tests/cli/ 2>&1 | tee test.log
 
 build:
-	python setup.py build -f
+	${PYTHON} setup.py build -f
 
 # Debian/Ubuntu requires an additional parameter in setup.py
 install: build
-	python setup.py install --root $(DESTDIR) -f
+	@${PYTHON} setup.py install --root $(DESTDIR) -f
 
 devinstall:
 	-rm -rf $(DESTDIR)/usr/share/cobbler
@@ -98,12 +120,12 @@ devinstall:
 	make restorestate
 
 savestate:
-	python setup.py -v savestate --root $(DESTDIR); \
+	@${PYTHON} setup.py -v savestate --root $(DESTDIR); \
 
 
 # Check if we are on Red Hat, Suse or Debian based distribution
 restorestate:
-	python setup.py -v restorestate --root $(DESTDIR); \
+	@${PYTHON} setup.py -v restorestate --root $(DESTDIR); \
 	find $(DESTDIR)/var/lib/cobbler/triggers | xargs chmod +x
 	if [ -n "`getent passwd apache`" ] ; then \
 		chown -R apache $(DESTDIR)/var/www/cobbler; \

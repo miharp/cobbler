@@ -19,6 +19,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 """
 
 
+from builtins import str
 import os
 
 import cobbler.utils as utils
@@ -36,19 +37,20 @@ def run(api, args, logger):
 
     settings = api.settings()
     scm_track_enabled = str(settings.scm_track_enabled).lower()
-    mode = str(settings.scm_track_mode).lower()
-    author = str(settings.scm_track_author)
-    push_script = str(settings.scm_push_script)
 
     if scm_track_enabled not in ["y", "yes", "1", "true"]:
         # feature disabled
         return 0
 
+    mode = str(settings.scm_track_mode).lower()
+    author = str(settings.scm_track_author)
+    push_script = str(settings.scm_push_script)
+
     if mode == "git":
         old_dir = os.getcwd()
         os.chdir("/var/lib/cobbler")
         if os.getcwd() != "/var/lib/cobbler":
-            raise "danger will robinson"
+            raise CX("danger will robinson")
 
         if not os.path.exists("/var/lib/cobbler/.git"):
             utils.subprocess_call(logger, "git init", shell=True)
@@ -71,7 +73,7 @@ def run(api, args, logger):
         old_dir = os.getcwd()
         os.chdir("/var/lib/cobbler")
         if os.getcwd() != "/var/lib/cobbler":
-            raise "danger will robinson"
+            raise CX("danger will robinson")
 
         if not os.path.exists("/var/lib/cobbler/.hg"):
             utils.subprocess_call(logger, "hg init", shell=True)

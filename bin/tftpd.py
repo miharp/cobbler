@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python3
 """
 SYNOPSIS
     tftpd.py [-h,--help] [-v,--verbose] [-d,--debug] [--version]
@@ -36,6 +36,12 @@ TODO
 
 """
 
+
+from future import standard_library
+standard_library.install_aliases()
+from builtins import str
+from builtins import range
+from builtins import object
 VERSION = 0.5
 
 import sys
@@ -50,11 +56,12 @@ import pwd
 import traceback
 import logging
 import logging.handlers
-import xmlrpclib
+import xmlrpc.client
 
-from collections import deque
+from cobbler_collections import deque
 from fnmatch import fnmatch
-from cobbler.utils import local_get_cobbler_api_url, tftpboot_location
+from cobbler.utils import local_get_cobbler_api_url
+from cobbler import settings
 
 import tornado.ioloop as ioloop
 import cobbler.templar
@@ -70,7 +77,7 @@ TFTP_OPCODE_ACK = 4
 TFTP_OPCODE_ERROR = 5
 TFTP_OPCODE_OACK = 6
 
-COBBLER_HANDLE = xmlrpclib.Server(local_get_cobbler_api_url())
+COBBLER_HANDLE = xmlrpc.client.Server(local_get_cobbler_api_url())
 
 OPTIONS = {
     "port": "69",
@@ -89,7 +96,7 @@ OPTIONS = {
     "cache-time": 5 * 300,
     "neg-cache-time": 10,
     "active": 0,
-    "prefix": tftpboot_location(),
+    "prefix": settings.Settings.tftpboot_location,
     "logger": "stream",
     "file_cmd": "/usr/bin/file",
     "user": "nobody",
@@ -114,7 +121,7 @@ ERRORS = [
 REQUESTS = None
 
 
-class RenderedFile:
+class RenderedFile(object):
     """
     A class to manage rendered files, without changing the logic
     of the rest of the TFTP server.  It replaces the file object
@@ -146,7 +153,7 @@ class RenderedFile:
         return 0
 
 
-class Packet:
+class Packet(object):
     """
     Represents a packet received (or sent?) from a tftp client.
     Is a base class that is intended to be overridden.
@@ -190,9 +197,9 @@ class RRQPacket(Packet):
 
         # opcode already extracted, and unpack is awkward for this
         # so pulling out strings by hand
-        (file, mode, rfc2347str) = data[2:].split('\0', 2)
+        (f, mode, rfc2347str) = data[2:].split('\0', 2)
 
-        logging.debug("RRQ for file %s(%s) from %s" % (file, mode, remote_addr))
+        logging.debug("RRQ for file %s(%s) from %s" % (f, mode, remote_addr))
         # Ug.  Can't come up with a simplier way of doing this
         if rfc2347str:
             # the "-1" is to trim off the trailing \0
@@ -202,11 +209,11 @@ class RRQPacket(Packet):
         else:
             self.req_options = deque()
 
-        self.filename = file
+        self.filename = f
         self.mode = mode
 
     def get_request(self, templar):
-        return Request(file, self.remote_addr, templar)
+        return Request(self.filename, self.remote_addr, templar)
 
 
 class DATAPacket(Packet):
@@ -291,12 +298,12 @@ class OACKPacket(Packet):
         self.options = rfc2347
 
     def marshall(self):
-        optstr = "\0".join(map(lambda x: str(x), self.options))
+        optstr = "\0".join([str(x) for x in self.options])
 
         return pack("!H %ds c" % (len(optstr)), self.opcode, optstr, '\0')
 
 
-class XMLRPCSystem:
+class XMLRPCSystem(object):
     """
     Use XMLRPC to look up system attributes.  This is the recommended
     method.
@@ -323,8 +330,7 @@ class XMLRPCSystem:
                 if name is not None:
                     logging.debug("Using cache name for system %s,%s" % (cache_ent["name"], ip_address))
                     resolve = False
-                elif (name is None and mac_address is None and
-                        cache_ent["time"] + neg_cache_time > now):
+                elif (name is None and mac_address is None and cache_ent["time"] + neg_cache_time > now):
                     age = (cache_ent["time"] + neg_cache_time) - now
                     logging.debug("Using neg-cache for system %s:%f" % (ip_address, age))
                     resolve = False
@@ -354,7 +360,7 @@ class XMLRPCSystem:
                     raise RuntimeError("%s,%s not found in cobbler" % (ip_address, mac_address))
                 name = systems[0]
 
-            except RuntimeError, e:
+            except RuntimeError as e:
                 logging.info(str(e))
                 name = None
             except:
@@ -392,7 +398,7 @@ class XMLRPCSystem:
             }
 
 
-class Request:
+class Request(object):
     """
     Handles the "business logic" of the TFTP server.  One instance
     is spawned per client request (RRQ packet received on well-known port)
@@ -418,11 +424,11 @@ class Request:
         # Look for elements starting with ".", and blow up.
         try:
             if len(self.filename) == 0:
-                    raise RuntimeError("Empty Path: ")
+                raise RuntimeError("Empty Path: ")
             for elm in self.filename.split("/"):
                 if elm[0] == ".":
                     raise RuntimeError("Path includes '.': ")
-        except RuntimeError, e:
+        except RuntimeError as e:
             logging.warn(str(e) + rrq_packet.filename)
             self.error_code = 2
             self.error_str = "Invalid file name"
@@ -460,7 +466,7 @@ class Request:
                 return trimmed
         else:
             # looking over all keys, because I have to search for keys I want
-            for (k, v) in self.system.system.iteritems():
+            for (k, v) in list(self.system.system.items()):
                 suffix = False
                 # if I find a mac_address key or ip_address key, then see if
                 # that matches the file I'm looking at
@@ -508,7 +514,7 @@ class Request:
 
         # Look for the file in the fetchable_files hash
         # XXX: Template name
-        for (k, v) in map(lambda x: x.split("="), fetchable_files.split(" ")):
+        for (k, v) in [x.split("=") for x in fetchable_files.split(" ")]:
             k = k.lstrip('/')  # Allow some slop w/ starting /s
             # Full Path: "/foo=/bar"
             result = None
@@ -536,7 +542,7 @@ class Request:
                 try:
                     return self.templar.render(
                         result, self.system.attrs, None).strip(), "template"
-                except Cheetah.Parser.ParseError, e:
+                except Cheetah.Parser.ParseError as e:
                     logging.warn('Unable to expand name: %s(%s): %s' % (filename, result, e))
 
         return filename, None
@@ -557,13 +563,13 @@ class Request:
         attrs["img_path"] = os.path.join("images", attrs["distro_name"])
 
         # Look for the file in the boot_files hash
-        for (k, v) in map(lambda x: x.split("="), boot_files.split(" ")):
+        for (k, v) in [x.split("=") for x in boot_files.split(" ")]:
             k = k.lstrip('/')  # Allow some slop w/ starting /s
 
             # Render the key, to expand things like "$img_path"
             try:
                 expanded_k = self.templar.render(k, attrs, None)
-            except Cheetah.Parser.ParseError, e:
+            except Cheetah.Parser.ParseError as e:
                 logging.warn('Unable to expand name: %s(%s): %s' % (filename, k, e))
                 continue
 
@@ -573,7 +579,7 @@ class Request:
 
                 try:
                     return self.templar.render(v, attrs, None).strip(), "template"
-                except Cheetah.Parser.ParseError, e:
+                except Cheetah.Parser.ParseError as e:
                     logging.warn('Unable to expand name: %s(%s): %s' % (filename, v, e))
 
         return filename, None
@@ -616,10 +622,10 @@ class Request:
         try:
             return RenderedFile(self.templar.render(open(self.filename, "r"),
                                 self.system.attrs, None))
-        except Cheetah.Parser.ParseError, e:
+        except Cheetah.Parser.ParseError as e:
             logging.warn('Unable to expand template: %s: %s' % (self.filename, e))
             return None
-        except IOError, e:
+        except IOError as e:
             logging.warn('Unable to expand template: %s: %s' % (self.filename, e))
             return None
 
@@ -847,6 +853,7 @@ class Request:
 
         raise NotImplementedError("Unknown state %d" % (self.state))
 
+
 REQ_NAME = 0
 REQ_CLASS = 1
 REQUESTS = [
@@ -874,8 +881,7 @@ def read_packet(data, local_sock, remote_addr):
 
     if REQUESTS[opcode][REQ_CLASS] is None:
         if opcode != TFTP_OPCODE_ERROR:
-                logging.warn("Unsupported request %d(%s) from %s" %
-                             (opcode, REQUESTS[opcode][REQ_NAME], remote_addr))
+            logging.warn("Unsupported request %d(%s) from %s" % (opcode, REQUESTS[opcode][REQ_NAME], remote_addr))
         local_sock.sendto(
             ERRORPacket(2, "Unsupported request").marshall(), remote_addr)
         return None
@@ -923,7 +929,7 @@ def handle_request(request, fd, events):
         while request.state != 0:  # 0 is the "done" state
             try:
                 data, address = request.local_sock.recvfrom(request.options["blksize"])
-            except socket.error, e:
+            except socket.error as e:
                 if e[0] in (errno.EWOULDBLOCK, errno.EAGAIN):
                     return
                 else:
@@ -983,7 +989,7 @@ def new_req(sock, templar, fd, events):
     while True:
         try:
             data, address = sock.recvfrom(OPTIONS["blksize"])
-        except socket.error, e:
+        except socket.error as e:
             if e[0] not in (errno.EWOULDBLOCK, errno.EAGAIN):
                 raise
             break
@@ -1059,7 +1065,7 @@ def main():
     parser.add_option('--neg-cache-time', action='store', type="int", default=10,
                       help="How long an ip->name mapping is valid")
 
-    opts = opt_help.keys()
+    opts = list(opt_help.keys())
     opts.sort()
     for k in opts:
         v = opt_help[k]
@@ -1104,9 +1110,9 @@ def main():
         OPTIONS["sock"].setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             OPTIONS["sock"].bind(("", OPTIONS["port"]))
-        except socket.error, e:
+        except socket.error as e:
             if e[0] in (errno.EPERM, errno.EACCES):
-                print "Unable to bind to port %d" % OPTIONS["port"]
+                print("Unable to bind to port %d" % OPTIONS["port"])
                 return -1
             else:
                 raise
@@ -1137,6 +1143,7 @@ def main():
     finally:
         OPTIONS["sock"].close()
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

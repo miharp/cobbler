@@ -1,5 +1,2 @@
-default=0
-timeout=0
-splashimage=(nd)/splash.xpm.gz
-title local
-	quit
+set timeout=1
+set default='local'

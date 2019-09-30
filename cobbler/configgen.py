@@ -23,18 +23,19 @@ module for generating configuration manifest using autoinstall_meta data,
 mgmtclasses, resources, and templates for a given system (hostname)
 """
 
+from builtins import object
 from Cheetah.Template import Template
 import simplejson as json
 import string
 
-from cexceptions import CX
-import clogger
+from cobbler.cexceptions import CX
+from cobbler import clogger
 import cobbler.api as capi
 import cobbler.utils
-import utils
+from cobbler import utils
 
 
-class ConfigGen:
+class ConfigGen(object):
     """
     Generate configuration data for Cobbler's management resources:
     repos, files and packages. Mainly used by Koan to configure systems.
@@ -46,7 +47,7 @@ class ConfigGen:
         self.handle = capi.CobblerAPI()
         self.system = self.handle.find_system(hostname=self.hostname)
         self.host_vars = self.get_cobbler_resource('autoinstall_meta')
-        self.logger = clogger.Logger("/var/log/cobbler/cobbler.log")
+        self.logger = clogger.Logger()
         self.mgmtclasses = self.get_cobbler_resource('mgmt_classes')
 
     # ----------------------------------------------------------------------

@@ -304,7 +304,7 @@ function install_cobbler_dependencies ()
     # build dependencies
     local dependencies="gcc git python-devel python-setuptools"
     # runtime dependencies
-    dependencies="$dependencies createrepo httpd mkisofs mod_ssl mod_wsgi pykickstart python-cheetah python-netaddr python-simplejson python-urlgrabber rsync tftp-server"
+    dependencies="$dependencies createrepo httpd mkisofs mod_ssl mod_wsgi pykickstart python-cheetah python-netaddr python-simplejson rsync tftp-server"
     if [ $redhat_version == "7" ]; then
         dependencies="$dependencies PyYAML"
     fi
@@ -328,7 +328,6 @@ function configure_cobbler_dependencies()
 {
 
     configure_http_server "localhost"
-    configure_tftp_server
 
 }
 
@@ -344,15 +343,6 @@ function install_cobbler ()
     cd ..
     rm cobbler -rf
     popd
-
-}
-
-# Configure TFTP server
-function configure_tftp_server ()
-{
-
-    # enable TFTP in xinetd
-    sed -i 's/.*disable.*$/        disable = no/' /etc/xinetd.d/tftp
 
 }
 
@@ -447,9 +437,6 @@ function start_services ()
 
     service dhcpd start
     chkconfig --level 23 dhcpd on
-
-    service xinetd start
-    chkconfig --level 23 xinetd on
 
     service httpd start
     chkconfig --level 23 httpd on
